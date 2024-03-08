@@ -10,7 +10,7 @@ String alphanum; // corresponding alphanumeric character
 uint8_t segments; // segments which are lit 
 } segdict; 
 
-const uint8_t nalphas = 63;
+const uint8_t nalphas = 64;
 
 const segdict lookup_segments[] = {
 {"0", 246},
@@ -44,7 +44,7 @@ const segdict lookup_segments[] = {
 {"s", 124},
 {"t", 204},
 {"u", 230},
-{"v", 0},
+{"v", 224},
 {"w", 0},
 {"x", 0},
 {"y", 110},
@@ -71,9 +71,10 @@ const segdict lookup_segments[] = {
 {"S", 124},
 {"T", 204},
 {"U", 230},
-{"V", 0},
+{"V", 224},
 {"W", 0},
 {"X", 0},
 {"Y", 110},
 {"Z", 218},
+{"^", 182},
 };

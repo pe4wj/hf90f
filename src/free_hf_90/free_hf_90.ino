@@ -26,8 +26,12 @@
 #include <SD.h>
 #include <SerialFlash.h>
 #include <Bounce.h>
+#include "Mems.h" // hard coded frequency memories
 
 
+
+// SW version
+#define version "v102"
 
 // SPI settings
 SPISettings settingsA(1000, MSBFIRST, SPI_MODE0); // 1 MHz appears to be the lowest SPI speed supported on Teensy4.0. Both the MC145220 and the 74HC595 support SPI Mode 0
@@ -68,7 +72,8 @@ const int TONE_FREQ = 1000; // Hz tune tone frequency
 const int TUNE_DELAY = 3000; // msec duration of tune signal after pressing "TUNE" key
 const int BEEP_FREQ = 1238;//1700; // Hz roger beep frequency, Quindar outro trone = 2475 Hz
 const int BEEP_DELAY = 250; // msec roger beep duration
-const int keyscan_time = 40; // msec wait time between keyscans
+const int keyscan_time = 1; // msec wait time between keyscans
+const int keywait_time = 250; // msec wait time after keypress
 
 // squelch
 AudioInputAnalog         input(ADC_INPUT_PIN);
@@ -89,8 +94,14 @@ bool hang = 0; // boolean to indicate whether the squelch is hanging
 
 
 uint8_t nsigs = 0;
-uint8_t nsigs_threshold = 0;
+uint8_t nsigs_threshold = 1;
 bool was_sig = false;
+
+// display digit blanking
+elapsedMillis blankcounter = 0;
+const int BLANK_TIME = 500; // msec
+bool blank = false;
+bool is_blanked = false;
 
 // LPF bi-stable relay control
 elapsedMillis lpfcounter = 0;
@@ -148,9 +159,10 @@ uint8_t volume = 16; // audio volume
 const uint8_t VOLUME_STEP = 12;; // volume step size
 bool is_muted = false;
 
-
-int freq = 3630000; // defaul startup frequency
-int previousfreq = freq + 100; // offset to invoke setting frequency upon startup
+int freq;
+int startup_freq = 3692000;//3630000; // default startup frequency
+String startup_mode = "LSB";
+int previousfreq = startup_freq + 100; // offset to invoke setting frequency upon startup
 
 // mode, AGC, mic inhibit
 bool is_agc_slow = true;
@@ -162,17 +174,22 @@ String sql = "SQL";
 String pwr = "HIP";
 String agc = "SLOAGC";
 String rbp = "BEEP";
+String opmode = "VFO"; // "^^E^^";
 
 
 uint8_t menu_idx = 0;
-const uint8_t N_MENUS = 6; // number of available menus
+const uint8_t N_MENUS = 7; // number of available menus
 // 0 = vfo <frequency display>
 // 1 = mode USB LSB
 // 2 = sql NOSQL SQL
 // 3 = pwr HIPWR LOPWR
 // 4 = agc SLOAGC FSTAGC
 // 5 = roger beep NOBEEP BEEP
+// 6 = vfo / mem VFO MEM
 
+
+// memories
+uint8_t memidx = 0;
 
 const uint8_t N_STEPS = 6;
 const int steps[N_STEPS] = {25, 100, 1000, 10000, 100000, 1000000};
@@ -204,21 +221,54 @@ void rotate() {
   if (!is_tx) { // only act upon rotary when not transmitting
 
     switch (menu_idx) {
+
+      
       case 0:
+      if (opmode == "VFO") {
 
-      if (result == DIR_CW) {
-        if (freq + steps[step_idx] < F_RF_MAX) {
-          freq = freq + steps[step_idx];
+        if (result == DIR_CW) {
+          if (freq + steps[step_idx] < F_RF_MAX) {
+            freq = freq + steps[step_idx];
 
 
+          }
+        }
+        else if (result == DIR_CCW) {
+          if (freq - steps[step_idx] > F_RF_MIN) {
+
+            freq = freq - steps[step_idx];
+          }
         }
       }
-      else if (result == DIR_CCW) {
-        if (freq - steps[step_idx] > F_RF_MIN) {
+      else if (opmode == "^^E^^") {
 
-          freq = freq - steps[step_idx];
+        if (result == DIR_CW) {
+          if (memidx < N_MEMS-1) {
+            memidx += 1;
+
+          }
+          else {
+            memidx = 0;
+          }
         }
-      }
+        else if (result == DIR_CCW) {
+          if (memidx > 0) {
+
+            memidx-=1;
+          }
+          else {
+            memidx = N_MEMS-1;
+          }
+        }
+
+
+        freq = freqs[memidx].freq_;
+        mode = freqs[memidx].mode_;
+   
+        
+
+        }
+      
       break;
 
       case 1:
@@ -327,6 +377,25 @@ void rotate() {
       }
       break;
       
+
+      case 6:
+      if (result == DIR_CW) { // only change upon CW direction rotation
+
+
+        if (opmode == "^^E^^") {
+          opmode = "VFO";
+        }
+        else {
+          opmode = "^^E^^"; // memory mode
+        }
+
+        
+        // display mode
+        String text = get_menu_text(menu_idx);
+
+        display(text, true); // this also updates the power register
+      }
+      break;
 
      
 
@@ -457,6 +526,14 @@ uint8_t lookupsegments(String instr) {
   }
 
   return out;
+}
+
+
+String blank_digit(String to_blank_in, uint8_t blank_idx){
+  String blanked = to_blank_in;
+  blanked[blank_idx] = " ";
+
+  return blanked;
 }
 
 digits str2disp(String disp_in, bool is_text_in) {
@@ -650,40 +727,43 @@ void unmute_audio() {
 uint8_t scan_keys() {
   // scan the front panel keys
   int8_t key = 0;
-  delay(keyscan_time);
+  
   digitalWrite(BR, LOW);
+  delay(keyscan_time);
   if (!digitalRead(LCL)) {
-    key = 1;
-    delay(100);
+    key = 1;//CHAN-
+    delay(keywait_time);
   }
   else if (!digitalRead(MCL)) {
-    key = 3;
-    delay(100);
+    key = 3;//TUNE
+    delay(keywait_time);
   }
   else if (!digitalRead(RCL)) {
-    key = 5;
-    delay(100);
+    key = 5;//CLAR-
+    delay(keywait_time);
   }
   
-  delay(keyscan_time);
+  
   digitalWrite(BR, HIGH);
-
+  delay(keyscan_time);
   digitalWrite(TR, LOW);
+  delay(keyscan_time);
   if (!digitalRead(LCL)) {
-    key = 2;
-    delay(100);
+    key = 2;//CHAN+
+    delay(keywait_time);
   }
   else if (!digitalRead(MCL)) {
-    key = 4;
-    delay(100);
+    key = 4;//MODE/ALARM
+    delay(keywait_time);
   }
   else if (!digitalRead(RCL)) {
-    key = 6;
-    delay(100);
+    key = 6;//CLAR+
+    delay(keywait_time);
   }
   
-  delay(keyscan_time);
+  
   digitalWrite(TR, HIGH);
+  delay(keyscan_time);
 
 return key;
 }
@@ -774,6 +854,8 @@ void squelch() {
             was_sig = true;
           }
 
+          
+
         }
         else {
           was_sig = false;
@@ -784,14 +866,11 @@ void squelch() {
               hangcounter = 0;
               hang = 0;
               mute_audio();
-              //is_muted = true;
+            
 
             }
           }
-          else {
 
-            nsigs = 0;
-          }
 
         }
 
@@ -853,6 +932,11 @@ String get_menu_text(uint8_t menu_idx_in) {
 
       case 5: menu_text = rbp;
       break;
+
+      case 6: menu_text = opmode;
+      break;
+
+      
     }
 
   return menu_text;
@@ -922,8 +1006,28 @@ void setup() {
 
   // write to shift register chain
   write_shiftreg(MISCREG, PALPFREG, VOLUMEREG, MICAGCMODEREG, dispd);
-  delay(500); // startup delay
+  
+  delay(750);
+  // dispd = str2disp(String(version), true);
+
+  // // write to shift register chain
+  // write_shiftreg(MISCREG, PALPFREG, VOLUMEREG, MICAGCMODEREG, dispd);
+
+
+  // 1 kHz tone selftest, by tuning to 1 kHz below the 24 MHz reference TCXO frequency in USB mode
+  freq = 23999000;
+  mode = "USB";
+  // write to synth but display SW version number, not frequency
+  writereg = freq2synthval(freq);
+  write_synth(writereg);
+  display(String(version), true);
+  unmute_audio();
+  delay(2000);
+  mute_audio();
+  freq = startup_freq;
+  mode = startup_mode;
   set_new_freq();
+
 }
 
 void loop() { // main loop
@@ -937,7 +1041,8 @@ void loop() { // main loop
     is_tx = true;
     mute_audio(); // first, mute the audio
     
-    digitalWrite(PTT_OUT, LOW); // assert PTT line    
+    digitalWrite(PTT_OUT, LOW); // assert PTT line   
+
     
   }
 
@@ -955,6 +1060,13 @@ void loop() { // main loop
     if (sql == "NOSQL") { // if squelch is not active
       unmute_audio(); // unmute the audio again
     }
+    else {
+          // re-init squelch but set nsigs such that it opens immediately upon a signal
+          was_sig = false;
+          // nsigs = nsigs_threshold-1;
+          // and set hang to 0
+          hang = 0;
+    }
   }
 
   
@@ -971,13 +1083,14 @@ void loop() { // main loop
     if (key_int == 1) {
       if (step_idx > 0) {
           step_idx -= 1;
+          blank = true;
       }
     }
     else if (key_int ==2) {
       if (step_idx < N_STEPS-1) {
         step_idx += 1;
-      }
-
+        blank = true;   
+      }  
     }  
 
     if (key_int == 4) {
@@ -1006,6 +1119,8 @@ void loop() { // main loop
 
       display(" tune ", true);
       mute_audio();
+      // reset menu_idx
+      menu_idx = 0; 
 
       // go zero beat
       if (mode == "USB") {
@@ -1028,7 +1143,7 @@ void loop() { // main loop
       // go back to original frequency, but do not update display
       writereg = freq2synthval(freq);
       write_synth(writereg);
-      if (sql == "NOSQL") { // if squelch is not active
+      if ((sql == "NOSQL") || (hang == 1)) { // if squelch is not active or if it is active and hanging
         unmute_audio(); // unmute the audio again
       }
   
@@ -1073,6 +1188,41 @@ void loop() { // main loop
         }
       lpfcounter = 0;
     }
+
+    if (blank) {
+      blankcounter = 0;
+      String blanked_freq = blank_digit(String(freq/100), 5-step_idx);
+      display(blanked_freq, false);
+      blank = false;
+      is_blanked = true;
+    }
+    
+    if (blankcounter > BLANK_TIME) {     
+      if (is_blanked) {
+        display(String(freq/100), false);
+        is_blanked = false;
+      }
+      blankcounter = 0;
+    }
+    
+
+    // if (n_blanks < 2) {
+    //   if (blankcounter > BLANK_TIME) {
+    //     n_blanks +=1;
+    //     blankcounter = 0;
+    //     if (n_blanks % 2 == 0) {
+    //       display(String(freq/100), false);          
+    //     }
+    //     else {
+    //       String blanked_freq = blank_digit(String(freq/100), 5-step_idx);
+    //       display(blanked_freq, false);
+    //     }
+    //   }
+    // }
+    // else {
+    //   blankcounter = 0;      
+    // }
+
 
   }
 

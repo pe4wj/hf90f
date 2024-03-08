@@ -30,7 +30,7 @@ r,afe
 s,afgcd
 t,fged
 u,fedbc
-v,-
+v,cde
 w,-
 x,-
 y,fbgcd
@@ -57,8 +57,9 @@ R,afe
 S,afgcd
 T,fged
 U,fedbc
-V,-
+V,cde
 W,-
 X,-
 Y,fbgcd
 Z,abged
+^,efabc
